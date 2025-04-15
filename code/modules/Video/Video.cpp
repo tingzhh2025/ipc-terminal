@@ -1,4 +1,5 @@
 #include "Video.h"
+#include "confidence_smoother.h"
 
 Video::Video()
 {
@@ -365,20 +366,27 @@ void Video::video_pipe2()
                         sY = (int)((float)sY / (float)video_height * rgn_video_height);
                         eX = (int)((float)eX / (float)video_width * rgn_video_width);
                         eY = (int)((float)eY / (float)video_height * rgn_video_height);
-                        // printf("%s @ (%d %d %d %d) %.3f\n", coco_cls_to_name(det_result->cls_id),
-                        //        sX, sY, eX, eY, det_result->prop);
+                        
+                        // 清理过期的置信度记录
+                        clean_expired_confidence_history();
+                        
+                        // 获取平滑处理后的置信度
+                        int width = eX - sX;
+                        int height = eY - sY;
+                        float smoothed_prop = get_smoothed_confidence(
+                            det_result->cls_id, sX, sY, width, height, det_result->prop);
 
                         RgnDrawParams task;
                         task.RgnHandle = RgnHandle;
                         task.x = sX;
                         task.y = sY;
-                        task.w = eX - sX;
-                        task.h = eY - sY;
+                        task.w = width;
+                        task.h = height;
                         task.line_pixel = line_pixel;
                         
-                        // 为目标添加类别名称标签，并带上置信度
+                        // 使用平滑后的置信度值
                         char label[32];
-                        snprintf(label, sizeof(label), "%s %.1f", coco_cls_to_name(det_result->cls_id), det_result->prop * 100.0f);
+                        snprintf(label, sizeof(label), "%s %.1f", coco_cls_to_name(det_result->cls_id), smoothed_prop * 100.0f);
                         task.label = label;
                         
                         tasks.push_back(task);
