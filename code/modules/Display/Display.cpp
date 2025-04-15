@@ -1,19 +1,45 @@
 #include "Display.h"
 #include "framebuffer.h"
+#include "DisplayCheck.h"
 
 /**
  * @brief 显示类构造函数。
  */
 Display::Display() {
-    // 初始化 framebuffer 设备，自动获取分辨率和色深
-    framebuffer_init(FB_DEVICE);
-    framebuffer_get_resolution(&(this->width), &(this->height), &(this->bit_depth));
+flag_quit = false;
+flag_pause = false;
 
-    flag_pause = false;
-    flag_quit = false;
+// 检查是否启用显示功能以及显示设备是否可用
+bool display_enabled = DisplayCheck::isDisplayEnabled();
+bool display_available = DisplayCheck::isDisplayAvailable();
 
-    // 启动显示线程
-    display_thread = std::thread(&Display::display_on_fb, this);
+if (!display_enabled || !display_available) {
+    LOG_WARN("Display is disabled or not available, display thread will not start\n");
+    flag_quit = true;
+    return;
+}
+
+// 初始化Framebuffer
+int ret = framebuffer_init(FB_DEVICE);
+if (ret != 0) {
+    LOG_ERROR("Framebuffer init failed\n");
+    flag_quit = true;
+    return;
+}
+
+// 获取显示分辨率和色深
+ret = framebuffer_get_resolution(&width, &height, &bit_depth);
+if (ret != 0) {
+    LOG_ERROR("Get framebuffer resolution failed\n");
+    flag_quit = true;
+    framebuffer_deinit();
+    return;
+}
+
+LOG_INFO("Framebuffer: %dx%d, %d bpp\n", width, height, bit_depth);
+
+// 创建显示线程
+display_thread = std::thread(&Display::display_on_fb, this);
 }
 
 /**
@@ -45,6 +71,10 @@ Display::~Display() {
  * @param frame 要显示的帧。
  */
 void Display::push_frame(const cv::Mat& frame) {
+    if (flag_quit) {
+        return;
+    }
+
     if (flag_pause || flag_quit) {
         return;
     }
@@ -110,18 +140,28 @@ void Display::display_on_fb() {
 
         ulock.unlock(); // 解锁以允许其他线程推送帧
 
+        if (frame.empty()) {
+            LOG_WARN("Empty frame received\n");
+            return;
+        }
+
         if (frame.type() != CV_8UC3) {
-            perror("Frame type mismatch");
+            LOG_ERROR("Frame type mismatch, expect CV_8UC3 but got %d\n", frame.type());
             return;
         }
         
-        if (frame.rows != this->height || 
-            frame.cols != this->width) {
-            cv::resize(frame, frame, cv::Size(width, height));
+        cv::Mat resized_frame;
+        if (frame.rows != height || frame.cols != width) {
+            cv::resize(frame, resized_frame, cv::Size(width, height));
+        } else {
+            resized_frame = frame.clone();
         }
 
-        cv::cvtColor(frame, frame, cv::COLOR_RGB2BGR565);
+        cv::Mat rgb565_frame;
+        cv::cvtColor(resized_frame, rgb565_frame, cv::COLOR_BGR2BGR565);
 
-        framebuffer_set_frame_rgb565((uint16_t*)frame.data, width, height);
+        if (framebuffer_set_frame_rgb565((uint16_t*)rgb565_frame.data, width, height) != 0) {
+            LOG_ERROR("Failed to set frame to framebuffer\n");
+        }
     }
 }

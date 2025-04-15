@@ -13,7 +13,10 @@ struct RgnDrawParams {
     RGN_HANDLE RgnHandle;   // 区域句柄
     int x, y, w, h;         // 绘制区域的坐标
     int line_pixel;         // 线条粗细
+    const char* label;      // 目标标签名称
 };
+
+#define LABEL_MARGIN_TOP 5  // 标签与检测框的距离
 
 struct RgnDrawTask {
     RgnDrawParams params;

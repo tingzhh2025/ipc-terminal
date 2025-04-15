@@ -253,12 +253,34 @@ void Video::video_pipe2()
         char text[16];
         rknn_app_context_t rknn_app_ctx;
         object_detect_result_list od_results;
-        const char *model_path = "./model/yolov5.rknn";
-        const char *label_path = "./model/coco_80_labels_list.txt";
+        
+        // 从配置文件读取模型路径，如果配置文件未指定，则使用默认路径
+        const char *model_path = rk_param_get_string("ai.model:path", "./model/yolov5.rknn");
+        const char *label_path = rk_param_get_string("ai.model:label", "./model/coco_80_labels_list.txt");
+        
+        // 检查模型文件是否存在
+        if (access(model_path, F_OK) != 0) {
+            LOG_ERROR("AI model file %s does not exist\n", model_path);
+            // 如果模型文件不存在，直接返回，不初始化AI功能
+            return;
+        }
+        if (access(label_path, F_OK) != 0) {
+            LOG_ERROR("AI label file %s does not exist\n", label_path);
+            return;
+        }
+        
         memset(&rknn_app_ctx, 0, sizeof(rknn_app_context_t));
 
-        init_yolov5_model(model_path, &rknn_app_ctx);
-        init_post_process(label_path);
+        // 初始化AI模型，如果失败则直接返回
+        if (init_yolov5_model(model_path, &rknn_app_ctx) != 0) {
+            LOG_ERROR("Failed to initialize AI model\n");
+            return;
+        }
+        if (init_post_process(label_path) != 0) {
+            LOG_ERROR("Failed to initialize post process\n");
+            release_yolov5_model(&rknn_app_ctx);
+            return;
+        }
 
         RGN_HANDLE RgnHandle = 0;
         RGN_CANVAS_INFO_S stCanvasInfo;
@@ -353,6 +375,12 @@ void Video::video_pipe2()
                         task.w = eX - sX;
                         task.h = eY - sY;
                         task.line_pixel = line_pixel;
+                        
+                        // 为目标添加类别名称标签，并带上置信度
+                        char label[32];
+                        snprintf(label, sizeof(label), "%s %.1f", coco_cls_to_name(det_result->cls_id), det_result->prop * 100.0f);
+                        task.label = label;
+                        
                         tasks.push_back(task);
                     }
 
