@@ -378,8 +378,11 @@ static int process_fp32(float *input, int *anchor, int grid_h, int grid_w, int h
     return validCount;
 }
 
-int post_process(rknn_app_context_t *app_ctx, void *outputs,  float conf_threshold, float nms_threshold, object_detect_result_list *od_results)
+int post_process(void *app_ctx_ptr, void *outputs, float conf_threshold, float nms_threshold, object_detect_result_list *od_results)
 {
+    // 类型转换，确保能正确访问 app_ctx 中的成员
+    rknn_app_context_t *app_ctx = (rknn_app_context_t *)app_ctx_ptr;
+    
 #if defined(RV1106_1103) 
     rknn_tensor_mem **_outputs = (rknn_tensor_mem **)outputs;
 #else

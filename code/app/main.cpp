@@ -1,4 +1,3 @@
-
 #include "global.h"
 #include "Network.h"
 #include "Control.h"
@@ -6,6 +5,7 @@
 #include "Pantilt.h"
 #include "Display.h"
 #include "Video.h"
+#include "../modules/ApiServer/api_server.h"
 
 #include "onvif_server.h"
 
@@ -16,6 +16,7 @@
 #define PANTILT_ENABLE 1
 #define DISPLAY_ENABLE 1
 #define VIDEO_ENABLE 1
+#define API_SERVER_ENABLE 1
 
 int rkipc_log_level = LOG_LEVEL_DEBUG;
 char ini_path[] = "ipc-terminal.ini";
@@ -45,7 +46,7 @@ int main(int argc, char *argv[]) {
     Control *control = new Control();
 #endif
 #if NETWORK_ENABLE && CONTROL_ENABLE
-    network->signal_network_received.connect(control, &Control::onNetworkReceived);
+    network->signal_network_received.connectWithRef(control, &Control::onNetworkReceived);
 #endif
 #if LED_ENABLE
     // LED 模块初始化
@@ -84,13 +85,62 @@ int main(int argc, char *argv[]) {
     control->registerControlFunction(ID_VIDEO, OP_VIDEO_PIPE1_START, std::bind(&Video::video_pipe1_start, video));
     control->registerControlFunction(ID_VIDEO, OP_VIDEO_PIPE1_STOP, std::bind(&Video::video_pipe1_stop, video));
     control->registerControlFunction(ID_VIDEO, OP_VIDEO_PIPE1_RESTART, std::bind(&Video::video_pipe1_restart, video));
+    
+    // 添加重新加载ROI配置的控制功能
+    control->registerControlFunction(ID_VIDEO, OP_VIDEO_RELOAD_CONFIG, std::bind(&Video::reload_roi_config, video));
 #endif
 #if VIDEO_ENABLE && DISPLAY_ENABLE
-    video->signal_video_frame.connect(display, &Display::push_frame);
+    video->signal_video_frame.connectWithRef(display, &Display::push_frame);
 #endif
 #if VIDEO_ENABLE && PANTILT_ENABLE
     video->signal_adjust_pantilt.connect(pantilt, &Pantilt::onAjustPantilt);
 #endif
+
+#if API_SERVER_ENABLE
+    // 初始化 API 服务器
+    LOG_DEBUG("API server initializing\n");
+    // 读取 API 服务器的端口号（默认为 8080）
+    int api_port = rk_param_get_int("api:port", 8080);
+    ApiServer api_server(api_port);
+    
+#if API_SERVER_ENABLE && VIDEO_ENABLE
+    // 设置 ROI 检测器
+    api_server.setRoiDetector(video->get_roi_detector());
+    
+    // 注册视频控制功能
+    api_server.setControl(control);
+#endif
+
+#if API_SERVER_ENABLE && LED_ENABLE
+    // 注册 LED 控制器
+    api_server.setLed(led0);
+#endif
+
+#if API_SERVER_ENABLE && PANTILT_ENABLE
+    // 注册云台控制器
+    api_server.setPantilt(pantilt);
+#endif
+    
+    // 读取并设置 API 密钥（如果有的话）
+    std::string api_key = rk_param_get_string("api:key", "");
+    if (!api_key.empty()) {
+        LOG_INFO("API authentication enabled\n");
+        api_server.setApiKey(api_key);
+    } else {
+        LOG_WARN("API authentication disabled. Consider setting an API key for better security\n");
+    }
+    
+    // 启动 API 服务器
+    if (api_server.start()) {
+        LOG_INFO("API server started on port %d\n", api_port);
+        
+        // 注册告警回调，以便记录告警历史
+        api_server.registerAlarmCallback();
+    } else {
+        LOG_ERROR("Failed to start API server\n");
+    }
+#endif
+
 #if ONVIF_SERVER_ENABLE
     // ONVIF 服务初始化
     LOG_DEBUG("ONVIF server initializing\n");
@@ -111,6 +161,10 @@ int main(int argc, char *argv[]) {
 #if ONVIF_SERVER_ENABLE
         onvif_server_deinit();
         LOG_DEBUG("ONVIF server deinitialized\n");
+#endif
+#if API_SERVER_ENABLE
+        api_server.stop();
+        LOG_DEBUG("API server stopped\n");
 #endif
 #if VIDEO_ENABLE
         delete video;

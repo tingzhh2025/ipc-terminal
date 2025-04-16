@@ -20,13 +20,18 @@
 #include "postprocess.h"
 
 #include "Signal.h"
+#include "roi_detector.h"
+#include "alarm_pusher.h"
+
+// 前向声明
+class ApiServer;
 
 class Video {
 public:
     Video();
     ~Video();
 
-    Signal<cv::Mat> signal_video_frame;
+    Signal<const cv::Mat&> signal_video_frame;
     Signal<int, int> signal_adjust_pantilt;
 
     void video_pipe0_start();
@@ -40,6 +45,12 @@ public:
     void video_pipe2_start();
     void video_pipe2_stop();
     void video_pipe2_restart();
+    
+    // 重新加载 ROI 配置
+    bool reload_roi_config();
+    
+    // 获取 ROI 检测器的引用（用于调试和配置）
+    RoiDetector* get_roi_detector() { return roi_detector.get(); }
 
 private:
     void video_pipe0();
@@ -55,4 +66,14 @@ private:
     std::unique_ptr<std::thread> video_thread0;
     std::unique_ptr<std::thread> video_thread1;
     std::unique_ptr<std::thread> video_thread2;
+
+    // ROI目标检测器
+    std::unique_ptr<RoiDetector> roi_detector;
+
+    // 处理告警事件
+    void handleAlarm(const AlarmInfo& alarm);
+
+    // 视频预处理函数
+    cv::Mat letterbox(const cv::Mat &image, int w, int h);
+    void mapCoordinates(int *x, int *y);
 };

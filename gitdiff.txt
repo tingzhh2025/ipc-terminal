@@ -1,0 +1,486 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index a84183c..0e9c637 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -54,6 +54,7 @@ file(GLOB SRC_FILES
+     ${APP_CXXFILE}
+     
+     ${COMMON_DIR}/param/*.c
++    ${COMMON_DIR}/param/param_float.c
+ 
+     ${MODULES_DIR}/Network/Network.cpp
+     ${MODULES_DIR}/Network/ntp.c
+@@ -77,6 +78,12 @@ file(GLOB SRC_FILES
+     ${MODULES_DIR}/Video/luckfox_rtsp.c
+     ${MODULES_DIR}/Video/luckfox_osd.c
+     ${MODULES_DIR}/Video/osd/*.c
++    ${MODULES_DIR}/Video/roi_detector.cpp
++    ${MODULES_DIR}/Video/alarm_pusher.cpp
++    ${MODULES_DIR}/Video/tracker/*.cpp
++    ${MODULES_DIR}/Video/confidence_smoother.cpp
++    
++    ${MODULES_DIR}/ApiServer/api_server.cpp
+ )
+ 
+ # =============================================================================
+diff --git a/code/app/main.cpp b/code/app/main.cpp
+index 4ddb8e1..1c98902 100644
+--- a/code/app/main.cpp
++++ b/code/app/main.cpp
+@@ -1,4 +1,3 @@
+-
+ #include "global.h"
+ #include "Network.h"
+ #include "Control.h"
+@@ -6,6 +5,7 @@
+ #include "Pantilt.h"
+ #include "Display.h"
+ #include "Video.h"
++#include "../modules/ApiServer/api_server.h"
+ 
+ #include "onvif_server.h"
+ 
+@@ -16,6 +16,7 @@
+ #define PANTILT_ENABLE 1
+ #define DISPLAY_ENABLE 1
+ #define VIDEO_ENABLE 1
++#define API_SERVER_ENABLE 1
+ 
+ int rkipc_log_level = LOG_LEVEL_DEBUG;
+ char ini_path[] = "ipc-terminal.ini";
+@@ -45,7 +46,7 @@ int main(int argc, char *argv[]) {
+     Control *control = new Control();
+ #endif
+ #if NETWORK_ENABLE && CONTROL_ENABLE
+-    network->signal_network_received.connect(control, &Control::onNetworkReceived);
++    network->signal_network_received.connectWithRef(control, &Control::onNetworkReceived);
+ #endif
+ #if LED_ENABLE
+     // LED 模块初始化
+@@ -84,13 +85,62 @@ int main(int argc, char *argv[]) {
+     control->registerControlFunction(ID_VIDEO, OP_VIDEO_PIPE1_START, std::bind(&Video::video_pipe1_start, video));
+     control->registerControlFunction(ID_VIDEO, OP_VIDEO_PIPE1_STOP, std::bind(&Video::video_pipe1_stop, video));
+     control->registerControlFunction(ID_VIDEO, OP_VIDEO_PIPE1_RESTART, std::bind(&Video::video_pipe1_restart, video));
++    
++    // 添加重新加载ROI配置的控制功能
++    control->registerControlFunction(ID_VIDEO, OP_VIDEO_RELOAD_CONFIG, std::bind(&Video::reload_roi_config, video));
+ #endif
+ #if VIDEO_ENABLE && DISPLAY_ENABLE
+-    video->signal_video_frame.connect(display, &Display::push_frame);
++    video->signal_video_frame.connectWithRef(display, &Display::push_frame);
+ #endif
+ #if VIDEO_ENABLE && PANTILT_ENABLE
+     video->signal_adjust_pantilt.connect(pantilt, &Pantilt::onAjustPantilt);
+ #endif
++
++#if API_SERVER_ENABLE
++    // 初始化 API 服务器
++    LOG_DEBUG("API server initializing\n");
++    // 读取 API 服务器的端口号（默认为 8080）
++    int api_port = rk_param_get_int("api:port", 8080);
++    ApiServer api_server(api_port);
++    
++#if API_SERVER_ENABLE && VIDEO_ENABLE
++    // 设置 ROI 检测器
++    api_server.setRoiDetector(video->get_roi_detector());
++    
++    // 注册视频控制功能
++    api_server.setControl(control);
++#endif
++
++#if API_SERVER_ENABLE && LED_ENABLE
++    // 注册 LED 控制器
++    api_server.setLed(led0);
++#endif
++
++#if API_SERVER_ENABLE && PANTILT_ENABLE
++    // 注册云台控制器
++    api_server.setPantilt(pantilt);
++#endif
++    
++    // 读取并设置 API 密钥（如果有的话）
++    std::string api_key = rk_param_get_string("api:key", "");
++    if (!api_key.empty()) {
++        LOG_INFO("API authentication enabled\n");
++        api_server.setApiKey(api_key);
++    } else {
++        LOG_WARN("API authentication disabled. Consider setting an API key for better security\n");
++    }
++    
++    // 启动 API 服务器
++    if (api_server.start()) {
++        LOG_INFO("API server started on port %d\n", api_port);
++        
++        // 注册告警回调，以便记录告警历史
++        api_server.registerAlarmCallback();
++    } else {
++        LOG_ERROR("Failed to start API server\n");
++    }
++#endif
++
+ #if ONVIF_SERVER_ENABLE
+     // ONVIF 服务初始化
+     LOG_DEBUG("ONVIF server initializing\n");
+@@ -112,6 +162,10 @@ int main(int argc, char *argv[]) {
+         onvif_server_deinit();
+         LOG_DEBUG("ONVIF server deinitialized\n");
+ #endif
++#if API_SERVER_ENABLE
++        api_server.stop();
++        LOG_DEBUG("API server stopped\n");
++#endif
+ #if VIDEO_ENABLE
+         delete video;
+         LOG_DEBUG("Video module deinitialized\n");
+diff --git a/code/common/param/param.h b/code/common/param/param.h
+index bb861c3..7700286 100644
+--- a/code/common/param/param.h
++++ b/code/common/param/param.h
+@@ -2,6 +2,8 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ #include "iniparser.h"
++#include <vector>
++#include <string>
+ 
+ #ifdef __cplusplus
+ extern "C" {
+@@ -13,6 +15,7 @@ int rk_param_get_int(const char *entry, int default_val);
+ int rk_param_set_int(const char *entry, int val);
+ const char *rk_param_get_string(const char *entry, const char *default_val);
+ int rk_param_set_string(const char *entry, const char *val);
++float rk_param_get_float(const char *entry, float default_val);
+ int rk_param_save();
+ int rk_param_init(char *ini_path);
+ int rk_param_deinit();
+@@ -20,4 +23,10 @@ int rk_param_reload();
+ 
+ #ifdef __cplusplus
+ }
++
++// 添加C++接口，返回特定部分的所有参数
++std::vector<std::pair<std::string, std::string>> rk_param_get_section(const char* section);
++
++// 添加C++接口，返回所有参数
++std::vector<std::pair<std::string, std::string>> rk_param_get_all();
+ #endif
+diff --git a/code/common/signal/Signal.h b/code/common/signal/Signal.h
+index 0f88e9e..5ec9e08 100644
+--- a/code/common/signal/Signal.h
++++ b/code/common/signal/Signal.h
+@@ -34,9 +34,9 @@ public:
+         slots.push_back(std::make_shared<Slot>(slot));  // 存储槽
+     }
+ 
+-    // 连接成员函数
++    // 修改这里，使用完全不同的名称避免重载冲突
+     template <typename T>
+-    void connect(T* object, void (T::*method)(const Args&...)) {
++    void connectWithRef(T* object, void (T::*method)(const Args&...)) {
+         auto slot = [object, method](Args... args) {
+             (object->*method)(args...);  // 调用成员函数
+         };
+@@ -112,9 +112,9 @@ public:
+         slots.push_back(std::make_shared<Slot>(slot));
+     }
+ 
+-    // 连接成员函数
++    // 修改这里，使用完全不同的名称避免重载冲突
+     template <typename T>
+-    void connect(T* object, void (T::*method)(const Args&...)) {
++    void connectWithRef(T* object, void (T::*method)(const Args&...)) {
+         auto slot = [object, method](Args... args) {
+             (object->*method)(args...);  // 调用成员函数
+         };
+diff --git a/code/ipc-terminal.ini b/code/ipc-terminal.ini
+index c2d18de..9988d31 100644
+--- a/code/ipc-terminal.ini
++++ b/code/ipc-terminal.ini
+@@ -121,6 +121,62 @@ smoke_detect = 0
+ font_color = fff799
+ line_pixel = 2
+ 
++; ROI 配置
++[ai.roi]
++enable = 1
++count = 3
++groups = 2
++detection_threshold = 0.4
++
++; ROI 组配置
++[ai.roi.group.0]
++name = "人员监控区"
++classes = 0          ; 人员类别 ID
++rois = 0,1           ; 关联的 ROI ID
++
++[ai.roi.group.1]
++name = "车辆监控区"
++classes = 1,2,3,5,7  ; 车辆相关类别 ID（自行车、汽车、摩托车、公交车、卡车）
++rois = 2             ; 关联的 ROI ID
++
++; 具体 ROI 配置
++[ai.roi.0]
++name = "前门区域"
++x = 100
++y = 100
++width = 300
++height = 500
++enabled = 1
++stay_time = 2
++cooldown_time = 10
++
++[ai.roi.1]
++name = "后门区域"
++x = 500
++y = 100
++width = 300
++height = 500
++enabled = 1
++stay_time = 2
++cooldown_time = 10
++
++[ai.roi.2]
++name = "停车区域"
++x = 1000
++y = 300
++width = 600
++height = 800
++enabled = 1
++stay_time = 0
++cooldown_time = 10
++
++; 告警推送配置
++[alarm]
++server_url = "http://localhost:8080/api/alarms"
++auth_token = ""
++retry_count = 3
++retry_interval_ms = 2000
++
+ [ai.md]
+ enable = 0
+ font_color = fff799
+diff --git a/code/main.cpp b/code/main.cpp
+deleted file mode 100644
+index e99ea6d..0000000
+--- a/code/main.cpp
++++ /dev/null
+@@ -1,26 +0,0 @@
+-#include "modules/Display/DisplayCheck.h"
+-
+-int main() {
+-    // ...原始代码...
+-    
+-    // 初始化其他必要模块
+-    Network network;
+-    Control control;
+-    Video video;
+-    Pantilt pantilt;
+-    Led led;
+-    
+-    // 根据配置和设备情况决定是否初始化Display
+-    std::unique_ptr<Display> display;
+-    if (DisplayCheck::isDisplayEnabled() && DisplayCheck::isDisplayAvailable()) {
+-        display = std::make_unique<Display>();
+-        // 连接视频帧信号到Display
+-        video.signal_video_frame.connect(std::bind(&Display::push_frame, display.get(), std::placeholders::_1));
+-    } else {
+-        LOG_INFO("Display module is disabled or not available\n");
+-    }
+-    
+-    // ...原始代码...
+-    
+-    return 0;
+-}
+diff --git a/code/modules/Control/Control.h b/code/modules/Control/Control.h
+index 6940094..8bdf9f7 100644
+--- a/code/modules/Control/Control.h
++++ b/code/modules/Control/Control.h
+@@ -58,6 +58,7 @@ enum VideoOpcode {
+     OP_VIDEO_PIPE1_START,
+     OP_VIDEO_PIPE1_STOP,
+     OP_VIDEO_PIPE1_RESTART,
++    OP_VIDEO_RELOAD_CONFIG,
+     OP_VIDEO_MAX
+ };
+ 
+diff --git a/code/modules/Video/Video.cpp b/code/modules/Video/Video.cpp
+index e6f1e4e..3ef5791 100644
+--- a/code/modules/Video/Video.cpp
++++ b/code/modules/Video/Video.cpp
+@@ -9,6 +9,16 @@ Video::Video()
+     pipe1_run_ = true;
+     pipe2_run_ = true;
+ 
++    // 初始化ROI检测器
++    roi_detector = std::make_unique<RoiDetector>();
++    roi_detector->registerAlarmCallback([this](const AlarmInfo& alarm) {
++        this->handleAlarm(alarm);
++    });
++    
++    // 初始化告警推送模块
++    g_alarm_pusher.init();
++    g_alarm_pusher.start();
++
+     rkaiq_init();
+     rkmpi_sys_init();
+     vi_dev_init();
+@@ -25,21 +35,23 @@ Video::Video()
+ 
+ Video::~Video()
+ {
++    // 停止告警推送模块
++    g_alarm_pusher.stop();
++    
+     {
+         std::lock_guard<std::mutex> lock(mtx_video);
+         video_run_ = false;
+     }
+-
+-    if (video_thread0 && video_thread2->joinable()) video_thread2->join();
+-    if (video_thread0 && video_thread1->joinable()) video_thread1->join();
++    
++    // 等待所有线程结束
+     if (video_thread0 && video_thread0->joinable()) video_thread0->join();
+-
++    if (video_thread1 && video_thread1->joinable()) video_thread1->join();
++    if (video_thread2 && video_thread2->joinable()) video_thread2->join();
++    
+     rtsp_deinit();
+     vi_dev_deinit();
+     rkmpi_sys_deinit();
+     rkaiq_deinit();
+-
+-    LOG_DEBUG("Video deinitialized\n");
+ }
+ 
+ void Video::video_pipe0()
+@@ -629,4 +641,75 @@ void Video::video_pipe2_restart() {
+     video_pipe2_stop();
+     video_pipe2_start();
+     LOG_DEBUG("Video pipe 2 restarted\n");
++}
++
++// 重新加载 ROI 配置
++bool Video::reload_roi_config() {
++    if (!roi_detector) {
++        LOG_ERROR("ROI detector is not initialized\n");
++        return false;
++    }
++    
++    LOG_INFO("Reloading ROI configuration...\n");
++    bool success = roi_detector->reloadConfig();
++    
++    if (success) {
++        LOG_INFO("ROI configuration reloaded successfully\n");
++        
++        // 重新初始化告警推送模块，读取可能更新的推送设置
++        g_alarm_pusher.stop();
++        g_alarm_pusher.init();
++        g_alarm_pusher.start();
++    } else {
++        LOG_ERROR("Failed to reload ROI configuration\n");
++    }
++    
++    return success;
++}
++
++// 处理告警事件
++void Video::handleAlarm(const AlarmInfo& alarm) {
++    // 将告警信息推送到告警处理模块
++    g_alarm_pusher.onAlarm(alarm);
++    
++    LOG_DEBUG("Alarm triggered: class=%d(%s), confidence=%.2f, position=(%d,%d,%d,%d)\n",
++            alarm.class_id, alarm.class_name.c_str(), alarm.confidence, 
++            alarm.box.x, alarm.box.y, alarm.box.width, alarm.box.height);
++}
++
++// 实现letterbox预处理，用于AI模型推理前的图像预处理
++cv::Mat Video::letterbox(const cv::Mat &image, int w, int h) {
++    int image_width = image.cols;
++    int image_height = image.rows;
++    
++    // 创建正方形图像
++    cv::Mat square = cv::Mat::zeros(h, w, CV_8UC3);
++    
++    // 计算缩放比例
++    float scale = std::min((float)w / image_width, (float)h / image_height);
++    
++    // 计算缩放后的尺寸
++    int scaled_width = int(image_width * scale);
++    int scaled_height = int(image_height * scale);
++    
++    // 缩放图像
++    cv::Mat resized;
++    cv::resize(image, resized, cv::Size(scaled_width, scaled_height));
++    
++    // 计算偏移量，使图像居中
++    int offset_x = (w - scaled_width) / 2;
++    int offset_y = (h - scaled_height) / 2;
++    
++    // 将缩放后的图像复制到正方形图像的中心
++    resized.copyTo(square(cv::Rect(offset_x, offset_y, scaled_width, scaled_height)));
++    
++    return square;
++}
++
++// 坐标映射，用于AI检测结果的坐标转换
++void Video::mapCoordinates(int *x, int *y) {
++    // 保持原坐标不变（如果有特殊的坐标映射需求，可以在此实现）
++    // 这个函数的目的是在模型输出的坐标和显示坐标之间进行转换
++    // 如果没有特殊需求，可以保持不变
++    return;
+ }
+\ No newline at end of file
+diff --git a/code/modules/Video/Video.h b/code/modules/Video/Video.h
+index dab37ea..c4e8eb2 100644
+--- a/code/modules/Video/Video.h
++++ b/code/modules/Video/Video.h
+@@ -20,13 +20,18 @@
+ #include "postprocess.h"
+ 
+ #include "Signal.h"
++#include "roi_detector.h"
++#include "alarm_pusher.h"
++
++// 前向声明
++class ApiServer;
+ 
+ class Video {
+ public:
+     Video();
+     ~Video();
+ 
+-    Signal<cv::Mat> signal_video_frame;
++    Signal<const cv::Mat&> signal_video_frame;
+     Signal<int, int> signal_adjust_pantilt;
+ 
+     void video_pipe0_start();
+@@ -40,6 +45,12 @@ public:
+     void video_pipe2_start();
+     void video_pipe2_stop();
+     void video_pipe2_restart();
++    
++    // 重新加载 ROI 配置
++    bool reload_roi_config();
++    
++    // 获取 ROI 检测器的引用（用于调试和配置）
++    RoiDetector* get_roi_detector() { return roi_detector.get(); }
+ 
+ private:
+     void video_pipe0();
+@@ -55,4 +66,14 @@ private:
+     std::unique_ptr<std::thread> video_thread0;
+     std::unique_ptr<std::thread> video_thread1;
+     std::unique_ptr<std::thread> video_thread2;
++
++    // ROI目标检测器
++    std::unique_ptr<RoiDetector> roi_detector;
++
++    // 处理告警事件
++    void handleAlarm(const AlarmInfo& alarm);
++
++    // 视频预处理函数
++    cv::Mat letterbox(const cv::Mat &image, int w, int h);
++    void mapCoordinates(int *x, int *y);
+ };
+\ No newline at end of file

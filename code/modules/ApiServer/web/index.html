@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>摄像头管理系统</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <header>
+        <h1>摄像头管理系统</h1>
+        <nav>
+            <ul>
+                <li><a href="#" class="active" data-page="dashboard">仪表盘</a></li>
+                <li><a href="#" data-page="video">视频流</a></li>
+                <li><a href="#" data-page="roi">ROI配置</a></li>
+                <li><a href="#" data-page="control">设备控制</a></li>
+                <li><a href="#" data-page="settings">系统设置</a></li>
+                <li><a href="#" data-page="logs">日志</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main>
+        <!-- 仪表盘页面 -->
+        <section id="dashboard" class="page active">
+            <h2>系统状态</h2>
+            <div class="dashboard-grid">
+                <div class="status-card">
+                    <h3>设备状态</h3>
+                    <div class="status-indicator online">在线</div>
+                    <div class="uptime">运行时间: <span id="uptime">--:--:--</span></div>
+                </div>
+                <div class="status-card">
+                    <h3>视频流状态</h3>
+                    <div class="video-status">
+                        <div>主流: <span id="main-stream-status" class="status-green">运行中</span></div>
+                        <div>子流: <span id="sub-stream-status" class="status-green">运行中</span></div>
+                    </div>
+                </div>
+                <div class="status-card">
+                    <h3>告警统计</h3>
+                    <div class="alarm-stats">
+                        <div>今日: <span id="today-alarms">0</span></div>
+                        <div>本周: <span id="weekly-alarms">0</span></div>
+                        <div>本月: <span id="monthly-alarms">0</span></div>
+                    </div>
+                </div>
+                <div class="status-card">
+                    <h3>快捷操作</h3>
+                    <div class="quick-actions">
+                        <button id="restart-video" class="btn">重启视频</button>
+                        <button id="toggle-led" class="btn">开关LED</button>
+                        <button id="reset-ptz" class="btn">复位云台</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row">
+                <div class="col-6">
+                    <h3>最近告警</h3>
+                    <div class="recent-alarms">
+                        <table id="alarm-table">
+                            <thead>
+                                <tr>
+                                    <th>时间</th>
+                                    <th>类型</th>
+                                    <th>位置</th>
+                                    <th>状态</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- 告警数据将通过JS动态填充 -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="col-6">
+                    <h3>系统资源</h3>
+                    <div class="system-resources">
+                        <div class="resource-bar">
+                            <div class="resource-label">CPU</div>
+                            <div class="progress-container">
+                                <div id="cpu-usage" class="progress-bar" style="width:30%">30%</div>
+                            </div>
+                        </div>
+                        <div class="resource-bar">
+                            <div class="resource-label">内存</div>
+                            <div class="progress-container">
+                                <div id="memory-usage" class="progress-bar" style="width:45%">45%</div>
+                            </div>
+                        </div>
+                        <div class="resource-bar">
+                            <div class="resource-label">存储</div>
+                            <div class="progress-container">
+                                <div id="storage-usage" class="progress-bar" style="width:60%">60%</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 视频流页面 -->
+        <section id="video" class="page">
+            <h2>视频监控</h2>
+            <div class="video-container">
+                <div id="video-player">
+                    <!-- 视频流将通过JS加载 -->
+                    <img src="/api/video/snapshot" alt="视频快照" id="video-snapshot">
+                    <div class="stream-controls">
+                        <button id="refresh-snapshot" class="btn">刷新快照</button>
+                        <select id="stream-selector">
+                            <option value="main">主码流</option>
+                            <option value="sub">子码流</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="video-controls">
+                    <h3>视频控制</h3>
+                    <div class="control-group">
+                        <h4>主码流</h4>
+                        <button id="start-main-stream" class="btn">启动</button>
+                        <button id="stop-main-stream" class="btn">停止</button>
+                        <button id="restart-main-stream" class="btn">重启</button>
+                    </div>
+                    <div class="control-group">
+                        <h4>子码流</h4>
+                        <button id="start-sub-stream" class="btn">启动</button>
+                        <button id="stop-sub-stream" class="btn">停止</button>
+                        <button id="restart-sub-stream" class="btn">重启</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ROI配置页面 -->
+        <section id="roi" class="page">
+            <h2>ROI 区域配置</h2>
+            <div class="roi-container">
+                <div class="roi-preview">
+                    <img src="/api/video/snapshot" alt="ROI预览" id="roi-preview-image">
+                    <canvas id="roi-canvas" width="640" height="480"></canvas>
+                    <div class="roi-controls">
+                        <button id="add-roi" class="btn">添加区域</button>
+                        <button id="clear-roi" class="btn">清除</button>
+                        <button id="save-roi" class="btn primary">保存配置</button>
+                    </div>
+                </div>
+                <div class="roi-settings">
+                    <h3>区域设置</h3>
+                    <div id="roi-list">
+                        <!-- ROI列表将通过JS动态填充 -->
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 设备控制页面 -->
+        <section id="control" class="page">
+            <h2>设备控制</h2>
+            <div class="control-container">
+                <div class="control-panel">
+                    <h3>LED控制</h3>
+                    <div class="led-controls">
+                        <button id="led-on" class="btn">开灯</button>
+                        <button id="led-off" class="btn">关灯</button>
+                        <button id="led-toggle" class="btn">切换</button>
+                        <button id="led-blink" class="btn">闪烁</button>
+                        <div class="form-group">
+                            <label for="blink-interval">闪烁间隔 (ms):</label>
+                            <input type="number" id="blink-interval" value="500" min="100" max="2000">
+                        </div>
+                    </div>
+                </div>
+                <div class="control-panel">
+                    <h3>云台控制</h3>
+                    <div class="ptz-controls">
+                        <div class="ptz-pad">
+                            <button id="ptz-up" class="btn ptz-btn">▲</button>
+                            <div class="ptz-row">
+                                <button id="ptz-left" class="btn ptz-btn">◄</button>
+                                <button id="ptz-reset" class="btn ptz-btn ptz-center">●</button>
+                                <button id="ptz-right" class="btn ptz-btn">►</button>
+                            </div>
+                            <button id="ptz-down" class="btn ptz-btn">▼</button>
+                        </div>
+                        <div class="ptz-settings">
+                            <div class="form-group">
+                                <label for="ptz-step">步进值:</label>
+                                <input type="range" id="ptz-step" value="10" min="1" max="50">
+                                <span id="ptz-step-value">10</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 系统设置页面 -->
+        <section id="settings" class="page">
+            <h2>系统设置</h2>
+            <div class="settings-container">
+                <div class="settings-section">
+                    <h3>网络设置</h3>
+                    <form id="network-settings">
+                        <div class="form-group">
+                            <label for="ip-address">IP地址:</label>
+                            <input type="text" id="ip-address" placeholder="192.168.1.100">
+                        </div>
+                        <div class="form-group">
+                            <label for="netmask">子网掩码:</label>
+                            <input type="text" id="netmask" placeholder="255.255.255.0">
+                        </div>
+                        <div class="form-group">
+                            <label for="gateway">网关:</label>
+                            <input type="text" id="gateway" placeholder="192.168.1.1">
+                        </div>
+                        <div class="form-group">
+                            <label for="dns">DNS:</label>
+                            <input type="text" id="dns" placeholder="8.8.8.8">
+                        </div>
+                        <button type="submit" class="btn primary">保存网络设置</button>
+                    </form>
+                </div>
+                <div class="settings-section">
+                    <h3>API设置</h3>
+                    <form id="api-settings">
+                        <div class="form-group">
+                            <label for="api-port">API端口:</label>
+                            <input type="number" id="api-port" value="8080" min="1" max="65535">
+                        </div>
+                        <div class="form-group">
+                            <label for="api-key">API密钥:</label>
+                            <input type="text" id="api-key">
+                        </div>
+                        <div class="form-group">
+                            <label for="enable-auth">
+                                <input type="checkbox" id="enable-auth" checked>
+                                启用API认证
+                            </label>
+                        </div>
+                        <button type="submit" class="btn primary">保存API设置</button>
+                    </form>
+                </div>
+            </div>
+        </section>
+
+        <!-- 日志页面 -->
+        <section id="logs" class="page">
+            <h2>系统日志</h2>
+            <div class="logs-container">
+                <div class="log-filters">
+                    <div class="form-group">
+                        <label for="log-level">日志级别:</label>
+                        <select id="log-level">
+                            <option value="ALL">全部</option>
+                            <option value="DEBUG">调试</option>
+                            <option value="INFO">信息</option>
+                            <option value="WARN">警告</option>
+                            <option value="ERROR">错误</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="log-search">搜索:</label>
+                        <input type="text" id="log-search" placeholder="输入关键词...">
+                    </div>
+                    <button id="refresh-logs" class="btn">刷新日志</button>
+                </div>
+                <div class="log-viewer">
+                    <pre id="log-content">加载日志中...</pre>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <p>版权所有 © 2025 摄像头管理系统 v1.0</p>
+    </footer>
+
+    <script src="js/main.js"></script>
+</body>
+</html>

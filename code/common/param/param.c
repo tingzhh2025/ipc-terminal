@@ -14,7 +14,7 @@
 
 char g_ini_path_[256];
 dictionary *g_ini_d_;
-static pthread_mutex_t g_param_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t g_param_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 int rk_param_dump() {
 	const char *section_name;

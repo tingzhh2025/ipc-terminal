@@ -9,6 +9,16 @@ Video::Video()
     pipe1_run_ = true;
     pipe2_run_ = true;
 
+    // 初始化ROI检测器
+    roi_detector = std::make_unique<RoiDetector>();
+    roi_detector->registerAlarmCallback([this](const AlarmInfo& alarm) {
+        this->handleAlarm(alarm);
+    });
+    
+    // 初始化告警推送模块
+    g_alarm_pusher.init();
+    g_alarm_pusher.start();
+
     rkaiq_init();
     rkmpi_sys_init();
     vi_dev_init();
@@ -25,21 +35,23 @@ Video::Video()
 
 Video::~Video()
 {
+    // 停止告警推送模块
+    g_alarm_pusher.stop();
+    
     {
         std::lock_guard<std::mutex> lock(mtx_video);
         video_run_ = false;
     }
-
-    if (video_thread0 && video_thread2->joinable()) video_thread2->join();
-    if (video_thread0 && video_thread1->joinable()) video_thread1->join();
+    
+    // 等待所有线程结束
     if (video_thread0 && video_thread0->joinable()) video_thread0->join();
-
+    if (video_thread1 && video_thread1->joinable()) video_thread1->join();
+    if (video_thread2 && video_thread2->joinable()) video_thread2->join();
+    
     rtsp_deinit();
     vi_dev_deinit();
     rkmpi_sys_deinit();
     rkaiq_deinit();
-
-    LOG_DEBUG("Video deinitialized\n");
 }
 
 void Video::video_pipe0()
@@ -629,4 +641,75 @@ void Video::video_pipe2_restart() {
     video_pipe2_stop();
     video_pipe2_start();
     LOG_DEBUG("Video pipe 2 restarted\n");
+}
+
+// 重新加载 ROI 配置
+bool Video::reload_roi_config() {
+    if (!roi_detector) {
+        LOG_ERROR("ROI detector is not initialized\n");
+        return false;
+    }
+    
+    LOG_INFO("Reloading ROI configuration...\n");
+    bool success = roi_detector->reloadConfig();
+    
+    if (success) {
+        LOG_INFO("ROI configuration reloaded successfully\n");
+        
+        // 重新初始化告警推送模块，读取可能更新的推送设置
+        g_alarm_pusher.stop();
+        g_alarm_pusher.init();
+        g_alarm_pusher.start();
+    } else {
+        LOG_ERROR("Failed to reload ROI configuration\n");
+    }
+    
+    return success;
+}
+
+// 处理告警事件
+void Video::handleAlarm(const AlarmInfo& alarm) {
+    // 将告警信息推送到告警处理模块
+    g_alarm_pusher.onAlarm(alarm);
+    
+    LOG_DEBUG("Alarm triggered: class=%d(%s), confidence=%.2f, position=(%d,%d,%d,%d)\n",
+            alarm.class_id, alarm.class_name.c_str(), alarm.confidence, 
+            alarm.box.x, alarm.box.y, alarm.box.width, alarm.box.height);
+}
+
+// 实现letterbox预处理，用于AI模型推理前的图像预处理
+cv::Mat Video::letterbox(const cv::Mat &image, int w, int h) {
+    int image_width = image.cols;
+    int image_height = image.rows;
+    
+    // 创建正方形图像
+    cv::Mat square = cv::Mat::zeros(h, w, CV_8UC3);
+    
+    // 计算缩放比例
+    float scale = std::min((float)w / image_width, (float)h / image_height);
+    
+    // 计算缩放后的尺寸
+    int scaled_width = int(image_width * scale);
+    int scaled_height = int(image_height * scale);
+    
+    // 缩放图像
+    cv::Mat resized;
+    cv::resize(image, resized, cv::Size(scaled_width, scaled_height));
+    
+    // 计算偏移量，使图像居中
+    int offset_x = (w - scaled_width) / 2;
+    int offset_y = (h - scaled_height) / 2;
+    
+    // 将缩放后的图像复制到正方形图像的中心
+    resized.copyTo(square(cv::Rect(offset_x, offset_y, scaled_width, scaled_height)));
+    
+    return square;
+}
+
+// 坐标映射，用于AI检测结果的坐标转换
+void Video::mapCoordinates(int *x, int *y) {
+    // 保持原坐标不变（如果有特殊的坐标映射需求，可以在此实现）
+    // 这个函数的目的是在模型输出的坐标和显示坐标之间进行转换
+    // 如果没有特殊需求，可以保持不变
+    return;
 }

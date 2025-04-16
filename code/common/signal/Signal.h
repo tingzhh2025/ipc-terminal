@@ -34,9 +34,9 @@ public:
         slots.push_back(std::make_shared<Slot>(slot));  // 存储槽
     }
 
-    // 连接成员函数
+    // 修改这里，使用完全不同的名称避免重载冲突
     template <typename T>
-    void connect(T* object, void (T::*method)(const Args&...)) {
+    void connectWithRef(T* object, void (T::*method)(const Args&...)) {
         auto slot = [object, method](Args... args) {
             (object->*method)(args...);  // 调用成员函数
         };
@@ -112,9 +112,9 @@ public:
         slots.push_back(std::make_shared<Slot>(slot));
     }
 
-    // 连接成员函数
+    // 修改这里，使用完全不同的名称避免重载冲突
     template <typename T>
-    void connect(T* object, void (T::*method)(const Args&...)) {
+    void connectWithRef(T* object, void (T::*method)(const Args&...)) {
         auto slot = [object, method](Args... args) {
             (object->*method)(args...);  // 调用成员函数
         };

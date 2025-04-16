@@ -13,7 +13,8 @@
 #define BOX_THRESH 0.25
 #define PROP_BOX_SIZE (5 + OBJ_CLASS_NUM)
 
-// class rknn_app_context_t;
+// 类型声明移除，改为使用void*
+
 typedef struct {
     int left;
     int top;
@@ -36,7 +37,9 @@ typedef struct {
 int init_post_process(const char* label_path);
 void deinit_post_process();
 char *coco_cls_to_name(int cls_id);
-int post_process(rknn_app_context_t *app_ctx, void *outputs,  float conf_threshold, float nms_threshold, object_detect_result_list *od_results);
+
+// 使用 void* 代替 rknn_app_context_t*
+int post_process(void *app_ctx, void *outputs, float conf_threshold, float nms_threshold, object_detect_result_list *od_results);
 
 // void deinitPostProcess();
 #endif //_RKNN_YOLOV5_DEMO_POSTPROCESS_H_

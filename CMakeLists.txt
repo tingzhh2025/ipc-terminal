@@ -54,6 +54,7 @@ file(GLOB SRC_FILES
     ${APP_CXXFILE}
     
     ${COMMON_DIR}/param/*.c
+    ${COMMON_DIR}/param/param_float.c
 
     ${MODULES_DIR}/Network/Network.cpp
     ${MODULES_DIR}/Network/ntp.c
@@ -77,12 +78,20 @@ file(GLOB SRC_FILES
     ${MODULES_DIR}/Video/luckfox_rtsp.c
     ${MODULES_DIR}/Video/luckfox_osd.c
     ${MODULES_DIR}/Video/osd/*.c
+    ${MODULES_DIR}/Video/roi_detector.cpp
+    ${MODULES_DIR}/Video/alarm_pusher.cpp
+    ${MODULES_DIR}/Video/tracker/*.cpp
+    ${MODULES_DIR}/Video/confidence_smoother.cpp
+    
+    ${MODULES_DIR}/ApiServer/api_server.cpp
 )
+
+file(GLOB SRC_FILES_PARAM ${COMMON_DIR}/param/*.cpp)
 
 # =============================================================================
 # 生成可执行文件
 # =============================================================================
-add_executable(${PROJECT_NAME} ${SRC_FILES})
+add_executable(${PROJECT_NAME} ${SRC_FILES} ${SRC_FILES_PARAM})
 
 # =============================================================================
 # 编译选项与定义
