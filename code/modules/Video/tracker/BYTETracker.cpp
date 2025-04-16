@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <unordered_set>
 
 // 静态成员初始化
 int STrack::next_id = 1;
@@ -38,25 +39,98 @@ void STrack::markRemoved() {
 BYTETracker::BYTETracker(const BYTETrackerParams& params) : params(params) {}
 
 std::vector<Object> BYTETracker::update(const std::vector<Object>& objects) {
-    // 转换检测结果为STrack对象
-    std::vector<std::shared_ptr<STrack>> detections;
-    for (const auto& obj : objects) {
-        detections.push_back(std::make_shared<STrack>(obj.rect, obj.prob, obj.label));
-    }
-    
-    // 匹配跟踪目标与检测目标
-    match(detections);
-    
-    // 返回当前所有跟踪中的目标
+    // 创建结果容器
     std::vector<Object> results;
-    for (const auto& track : tracked_stracks) {
-        if (track->state() == TrackState::Tracked) {
-            Object obj;
-            obj.rect = track->getRect();
-            obj.prob = track->getScore();
-            obj.label = track->getClassId();
-            obj.track_id = track->trackId();
-            results.push_back(obj);
+    
+    // 创建当前检测的ID集合
+    std::unordered_set<int> current_ids;
+    
+    // 清理过期的跟踪目标 - 这里大幅减少保留时间到0.5秒
+    auto now = std::chrono::steady_clock::now();
+    tracked_stracks.erase(
+        std::remove_if(tracked_stracks.begin(), tracked_stracks.end(), 
+            [&now](const std::shared_ptr<STrack>& track) {
+                auto last_seen = track->getLastSeen();
+                if (!last_seen) return true;
+                
+                auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - *last_seen).count();
+                return duration > 500; // 只保留0.5秒内看到的目标
+            }
+        ), 
+        tracked_stracks.end()
+    );
+    
+    // 处理每个检测结果
+    for (const auto& obj : objects) {
+        bool matched = false;
+        std::shared_ptr<STrack> best_match;
+        float best_iou = 0.0f;
+        
+        // 尝试匹配现有的跟踪目标 - 使用更宽松的匹配条件
+        for (auto& track : tracked_stracks) {
+            // 只匹配相同类型的物体
+            if (track->getClassId() != obj.label) {
+                continue;
+            }
+            
+            // 计算IoU
+            cv::Rect rect1 = track->getRect();
+            cv::Rect rect2 = obj.rect;
+            
+            // 计算重叠区域
+            int x1 = std::max(rect1.x, rect2.x);
+            int y1 = std::max(rect1.y, rect2.y);
+            int x2 = std::min(rect1.x + rect1.width, rect2.x + rect2.width);
+            int y2 = std::min(rect1.y + rect1.height, rect2.y + rect2.height);
+            
+            int overlap_w = std::max(0, x2 - x1);
+            int overlap_h = std::max(0, y2 - y1);
+            float overlap_area = overlap_w * overlap_h;
+            
+            // 计算两个矩形的面积
+            float area1 = rect1.width * rect1.height;
+            float area2 = rect2.width * rect2.height;
+            
+            // 计算IoU
+            float iou = overlap_area / (area1 + area2 - overlap_area);
+            
+            // 使用更宽松的IoU阈值 (0.3)
+            if (iou > 0.3f && iou > best_iou) {
+                best_iou = iou;
+                best_match = track;
+                matched = true;
+            }
+        }
+        
+        // 如果找到匹配，则更新跟踪目标
+        if (matched) {
+            // 立即更新位置，不使用任何平滑或预测
+            best_match->updateTrack(obj.rect, obj.prob, obj.label);
+            best_match->markTracked();
+            
+            Object result;
+            result.rect = best_match->getRect();
+            result.prob = best_match->getScore();
+            result.label = best_match->getClassId();
+            result.track_id = best_match->trackId();
+            
+            results.push_back(result);
+            current_ids.insert(best_match->trackId());
+        } 
+        // 如果没有找到匹配，则创建新的跟踪目标
+        else {
+            auto new_track = std::make_shared<STrack>(obj.rect, obj.prob, obj.label);
+            new_track->markTracked();
+            tracked_stracks.push_back(new_track);
+            
+            Object result;
+            result.rect = new_track->getRect();
+            result.prob = new_track->getScore();
+            result.label = new_track->getClassId();
+            result.track_id = new_track->trackId();
+            
+            results.push_back(result);
+            current_ids.insert(new_track->trackId());
         }
     }
     
@@ -71,210 +145,5 @@ std::chrono::steady_clock::time_point* BYTETracker::getTrackLastSeen(int track_i
         }
     }
     
-    // 在丢失目标中搜索
-    for (const auto& track : lost_stracks) {
-        if (track->trackId() == track_id) {
-            return track->getLastSeen();
-        }
-    }
-    
     return nullptr;
-}
-
-void BYTETracker::match(const std::vector<std::shared_ptr<STrack>>& detections) {
-    std::vector<std::shared_ptr<STrack>> activated_stracks;
-    std::vector<std::shared_ptr<STrack>> refind_stracks;
-    std::vector<std::shared_ptr<STrack>> removed_stracks;
-    std::vector<std::shared_ptr<STrack>> lost_stracks_in_frame;
-    
-    // 分离出跟踪中和丢失中的目标
-    std::vector<std::shared_ptr<STrack>> tracked_stracks_curr;
-    for (const auto& track : tracked_stracks) {
-        if (track->state() == TrackState::Tracked) {
-            tracked_stracks_curr.push_back(track);
-        }
-    }
-    
-    // 第一阶段匹配：跟踪中的目标 vs 高质量检测结果
-    std::vector<std::shared_ptr<STrack>> high_score_dets;
-    std::vector<std::shared_ptr<STrack>> low_score_dets;
-    
-    for (const auto& det : detections) {
-        if (det->getScore() >= params.high_thresh) {
-            high_score_dets.push_back(det);
-        } else {
-            low_score_dets.push_back(det);
-        }
-    }
-    
-    // 计算跟踪目标和高质量检测之间的IoU距离矩阵
-    std::vector<std::vector<float>> iou_dists(tracked_stracks_curr.size(), 
-                                             std::vector<float>(high_score_dets.size()));
-    
-    for (size_t i = 0; i < tracked_stracks_curr.size(); ++i) {
-        for (size_t j = 0; j < high_score_dets.size(); ++j) {
-            iou_dists[i][j] = iou_distance(tracked_stracks_curr[i], high_score_dets[j]);
-        }
-    }
-    
-    // 匹配高质量检测与跟踪目标
-    std::vector<std::pair<int, int>> matches;
-    std::vector<int> unmatched_tracks;
-    std::vector<int> unmatched_detects;
-    
-    linear_assignment(iou_dists, params.match_thresh, matches, unmatched_tracks, unmatched_detects);
-    
-    // 处理匹配结果
-    for (auto& [track_idx, det_idx] : matches) {
-        auto& track = tracked_stracks_curr[track_idx];
-        auto& det = high_score_dets[det_idx];
-        track->updateTrack(det->getRect(), det->getScore(), det->getClassId());
-        track->markTracked();
-        activated_stracks.push_back(track);
-    }
-    
-    // 处理未匹配上的跟踪目标
-    for (int idx : unmatched_tracks) {
-        auto& track = tracked_stracks_curr[idx];
-        track->markLost();
-        lost_stracks_in_frame.push_back(track);
-    }
-    
-    // 处理未匹配的检测结果，创建新的跟踪目标
-    for (int idx : unmatched_detects) {
-        auto& det = high_score_dets[idx];
-        if (det->getScore() >= params.track_thresh) {
-            activated_stracks.push_back(det);
-        }
-    }
-    
-    // 处理所有低分检测，也创建新的跟踪目标
-    for (const auto& det : low_score_dets) {
-        if (det->getScore() >= params.track_thresh) {
-            activated_stracks.push_back(det);
-        }
-    }
-    
-    // 处理已经丢失太久的目标
-    for (const auto& track : lost_stracks_in_frame) {
-        if (track->state() == TrackState::Lost) {
-            // 判断是否已经丢失太久
-            bool lost_too_long = false;
-            auto last_seen = track->getLastSeen();
-            if (last_seen) {
-                auto now = std::chrono::steady_clock::now();
-                auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - *last_seen);
-                lost_too_long = duration.count() > params.track_buffer;
-            }
-            
-            if (lost_too_long) {
-                track->markRemoved();
-                removed_stracks.push_back(track);
-            } else {
-                tracked_stracks.push_back(track);
-            }
-        }
-    }
-    
-    // 合并 tracked_stracks, activated_stracks和refind_stracks
-    for (const auto& track : tracked_stracks_curr) {
-        if (track->state() == TrackState::Tracked) {
-            tracked_stracks.push_back(track);
-        }
-    }
-    for (const auto& track : refind_stracks) {
-        tracked_stracks.push_back(track);
-    }
-    
-    // 更新丢失目标列表
-    for (const auto& track : lost_stracks_in_frame) {
-        if (track->state() == TrackState::Lost) {
-            lost_stracks.push_back(track);
-        }
-    }
-    
-    // 添加被删除的目标到removed_stracks列表
-    for (const auto& track : removed_stracks) {
-        removed_stracks.push_back(track);
-    }
-    
-    // 去重处理
-    // ...（这里可以添加去重逻辑，但为了简化代码暂时省略）
-}
-
-float BYTETracker::iou_distance(const std::shared_ptr<STrack>& track, const std::shared_ptr<STrack>& detect) {
-    // 计算IoU距离 (1 - IoU)
-    cv::Rect rect1 = track->getRect();
-    cv::Rect rect2 = detect->getRect();
-    
-    int x1 = std::max(rect1.x, rect2.x);
-    int y1 = std::max(rect1.y, rect2.y);
-    int x2 = std::min(rect1.x + rect1.width, rect2.x + rect2.width);
-    int y2 = std::min(rect1.y + rect1.height, rect2.y + rect2.height);
-    
-    int w = std::max(0, x2 - x1);
-    int h = std::max(0, y2 - y1);
-    
-    float inter_area = w * h;
-    float union_area = rect1.width * rect1.height + rect2.width * rect2.height - inter_area;
-    
-    if (union_area == 0) return 1.0f;
-    
-    float iou = inter_area / union_area;
-    return 1.0f - iou;
-}
-
-void BYTETracker::linear_assignment(const std::vector<std::vector<float>>& cost_matrix, 
-                                  float thresh,
-                                  std::vector<std::pair<int, int>>& matches,
-                                  std::vector<int>& unmatched_a,
-                                  std::vector<int>& unmatched_b) {
-    // 简单贪心匹配的实现
-    matches.clear();
-    unmatched_a.clear();
-    unmatched_b.clear();
-    
-    const size_t rows = cost_matrix.size();
-    if (rows == 0) return;
-    
-    const size_t cols = cost_matrix[0].size();
-    if (cols == 0) return;
-    
-    // 初始化所有行和列为未匹配状态
-    std::vector<bool> row_matched(rows, false);
-    std::vector<bool> col_matched(cols, false);
-    
-    // 贪心匹配
-    for (size_t i = 0; i < rows; ++i) {
-        float min_cost = thresh;
-        size_t min_j = cols;
-        
-        for (size_t j = 0; j < cols; ++j) {
-            if (col_matched[j]) continue;
-            
-            if (cost_matrix[i][j] < min_cost) {
-                min_cost = cost_matrix[i][j];
-                min_j = j;
-            }
-        }
-        
-        if (min_j < cols) {
-            matches.push_back({i, min_j});
-            row_matched[i] = true;
-            col_matched[min_j] = true;
-        }
-    }
-    
-    // 收集未匹配的行和列
-    for (size_t i = 0; i < rows; ++i) {
-        if (!row_matched[i]) {
-            unmatched_a.push_back(i);
-        }
-    }
-    
-    for (size_t j = 0; j < cols; ++j) {
-        if (!col_matched[j]) {
-            unmatched_b.push_back(j);
-        }
-    }
 }

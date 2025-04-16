@@ -9,10 +9,11 @@
 RoiDetector::RoiDetector() {
     // 创建目标跟踪器
     BYTETrackerParams params;
-    params.track_buffer = 30;  // 跟踪缓冲区大小
+    params.track_buffer = 5;  // 减少跟踪缓冲区大小，从30减为5，提高实时响应性
     params.track_thresh = 0.25f;  // 跟踪阈值
     params.high_thresh = 0.6f;  // 高质量目标阈值
-    params.match_thresh = 0.8f;  // 匹配阈值
+    params.match_thresh = 0.7f;  // 降低匹配阈值以更快接受新位置
+    params.frame_rate = 25;  // 设置帧率，帮助跟踪器更好地估计运动
     
     tracker = std::make_unique<BYTETracker>(params);
     
@@ -80,6 +81,7 @@ cv::Scalar RoiDetector::generateColorByClassId(int class_id) {
 bool RoiDetector::loadConfig() {
     // 从配置文件加载检测阈值
     detection_threshold = rk_param_get_float("ai.roi:detection_threshold", 0.4f);
+    LOG_INFO("ROI detection threshold: %.2f", detection_threshold);
     
     // 清空现有配置
     roi_areas.clear();
@@ -225,10 +227,13 @@ bool RoiDetector::loadConfig() {
         std::unordered_set<int> class_set(group.classes.begin(), group.classes.end());
         group_classes[group.id] = class_set;
         
-        roi_groups.push_back(group);
-        
-        LOG_INFO("Loaded ROI Group %d: %s with %zu ROIs and %zu classes", 
-                 group.id, group.name.c_str(), group.roi_ids.size(), group.classes.size());
+        std::string classes_debug = "Classes: ";
+        for (auto cls : group.classes) {
+            classes_debug += std::to_string(cls) + "(" + std::string(coco_cls_to_name(cls)) + "), ";
+        }
+        LOG_INFO("Loaded ROI Group %d: %s with %zu ROIs and %zu classes - %s", 
+                group.id, group.name.c_str(), group.roi_ids.size(), group.classes.size(), 
+                classes_debug.c_str());
     }
     
     return !roi_areas.empty();
@@ -443,9 +448,6 @@ int RoiDetector::getRoiGroup(int roi_id) {
 
 void RoiDetector::checkAlarm(const cv::Mat& frame, int track_id) {
     auto& obj = tracked_objects[track_id];
-    if (obj.alarm_triggered) {
-        return; // 已经触发过告警，等待冷却
-    }
     
     // 获取当前ROI区域
     const RoiArea* roi = nullptr;
@@ -469,6 +471,18 @@ void RoiDetector::checkAlarm(const cv::Mat& frame, int track_id) {
                 break;
             }
         }
+    }
+    
+    // 添加特定区域的提示信息
+    if (roi->name == "左侧区域") {
+        LOG_INFO("in roi 1 - 人员进入左侧区域");
+    } else if (roi->name == "右侧区域") {
+        LOG_INFO("in roi 2 - 人员进入右侧区域");
+    }
+    
+    // 检查是否已经触发过告警
+    if (obj.alarm_triggered) {
+        return; // 已经触发过告警，等待冷却
     }
     
     auto now = std::chrono::steady_clock::now();
@@ -723,8 +737,8 @@ void RoiDetector::cleanExpiredObjects() {
         auto& obj = it->second;
         auto last_seen = tracker->getTrackLastSeen(obj.track_id);
         
-        // 如果跟踪器已经5秒没有看到这个目标，删除它
-        if (last_seen && std::chrono::duration_cast<std::chrono::seconds>(now - *last_seen).count() > 5) {
+        // 将过期时间从5秒减少到1秒，更快地移除不可见目标
+        if (last_seen && std::chrono::duration_cast<std::chrono::seconds>(now - *last_seen).count() > 1) {
             it = tracked_objects.erase(it);
         } else {
             ++it;

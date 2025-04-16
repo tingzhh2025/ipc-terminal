@@ -20,10 +20,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
-
 #include <set>
 #include <vector>
-// #define LABEL_NALE_TXT_PATH "./model/coco_80_labels_list.txt"
 
 static char *labels[OBJ_CLASS_NUM];
 
@@ -378,6 +376,7 @@ static int process_fp32(float *input, int *anchor, int grid_h, int grid_w, int h
     return validCount;
 }
 
+// 将第一个参数从rknn_app_context_t*改为void*，以匹配yolov5.cpp中的调用
 int post_process(void *app_ctx_ptr, void *outputs, float conf_threshold, float nms_threshold, object_detect_result_list *od_results)
 {
     // 类型转换，确保能正确访问 app_ctx 中的成员

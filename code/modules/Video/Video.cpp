@@ -1,5 +1,4 @@
 #include "Video.h"
-#include "confidence_smoother.h"
 
 Video::Video()
 {
@@ -379,28 +378,15 @@ void Video::video_pipe2()
                         eX = (int)((float)eX / (float)video_width * rgn_video_width);
                         eY = (int)((float)eY / (float)video_height * rgn_video_height);
                         
-                        // 清理过期的置信度记录
-                        clean_expired_confidence_history();
-                        
-                        // 获取平滑处理后的置信度
-                        int width = eX - sX;
-                        int height = eY - sY;
-                        float smoothed_prop = get_smoothed_confidence(
-                            det_result->cls_id, sX, sY, width, height, det_result->prop);
-
                         RgnDrawParams task;
                         task.RgnHandle = RgnHandle;
                         task.x = sX;
                         task.y = sY;
-                        task.w = width;
-                        task.h = height;
+                        task.w = eX - sX;
+                        task.h = eY - sY;
                         task.line_pixel = line_pixel;
-                        
-                        // 使用平滑后的置信度值
-                        char label[32];
-                        snprintf(label, sizeof(label), "%s %.1f", coco_cls_to_name(det_result->cls_id), smoothed_prop * 100.0f);
-                        task.label = label;
-                        
+                        snprintf(text, sizeof(text), "%s %.1f", coco_cls_to_name(det_result->cls_id), det_result->prop * 100.0f);
+                        task.label = text;
                         tasks.push_back(task);
                     }
 
